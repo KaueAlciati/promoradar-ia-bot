@@ -1,5 +1,13 @@
-# dependências
+# Node
 node_modules/
 
-# variáveis de ambiente
+# Ambiente
 .env
+
+# WhatsApp Web JS
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Arquivos locais do bot
+groups.json
+whatsapp_groups.json

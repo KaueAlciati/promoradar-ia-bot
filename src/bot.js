@@ -2,8 +2,12 @@ require("dotenv").config();
 const fs = require("fs");
 const { Telegraf, Markup } = require("telegraf");
 const puppeteer = require("puppeteer");
+const axios = require("axios");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const WHATS_SERVER_URL =
+  process.env.WHATS_SERVER_URL ||
+  `http://localhost:${process.env.WHATS_SERVER_PORT || 3000}`;
 
 if (!BOT_TOKEN) {
   console.error("Erro: BOT_TOKEN não definido no .env");
@@ -53,6 +57,37 @@ function ensureGroupRegistered(chat) {
   telegramGroups.push({ id: chat.id, title });
   saveGroups(telegramGroups);
 }
+
+// ===============================
+// ARMAZENAMENTO DE GRUPOS (WhatsApp)
+// ===============================
+const WHATS_GROUPS_FILE = "whatsapp_groups.json";
+
+function loadWhatsGroups() {
+  try {
+    const raw = fs.readFileSync(WHATS_GROUPS_FILE, "utf8");
+    const data = JSON.parse(raw);
+    if (Array.isArray(data)) return data;
+  } catch (e) {
+    // arquivo ainda não existe ou está vazio
+  }
+  return [];
+}
+
+function saveWhatsGroups(groups) {
+  try {
+    fs.writeFileSync(
+      WHATS_GROUPS_FILE,
+      JSON.stringify(groups, null, 2),
+      "utf8"
+    );
+  } catch (e) {
+    console.error("Erro ao salvar whatsapp_groups.json:", e.message || e);
+  }
+}
+
+// lista de "grupos" de WhatsApp registrados: [{ id, title }]
+let whatsappGroups = loadWhatsGroups();
 
 // ===============================
 // SESSÕES POR CHAT
@@ -150,6 +185,44 @@ function getTelegramGroupsKeyboard() {
           Markup.button.callback(
             telegramGroups[i + 1].title,
             `tg_group_${telegramGroups[i + 1].id}`
+          )
+        );
+      }
+      rows.push(row);
+    }
+  }
+
+  rows.push([Markup.button.callback("⬅️ Voltar", "back_main_menu")]);
+
+  return Markup.inlineKeyboard(rows);
+}
+
+// teclado com "grupos" de WhatsApp
+function getWhatsGroupsKeyboard() {
+  const rows = [];
+
+  if (whatsappGroups.length === 0) {
+    rows.push([
+      Markup.button.callback("Nenhum grupo Whats cadastrado", "wa_no_groups"),
+    ]);
+  } else {
+    rows.push([
+      Markup.button.callback("📱 Todos os Grupos Whats", "wa_all_groups"),
+    ]);
+
+    for (let i = 0; i < whatsappGroups.length; i += 2) {
+      const row = [];
+      row.push(
+        Markup.button.callback(
+          whatsappGroups[i].title,
+          `wa_group_${whatsappGroups[i].id}`
+        )
+      );
+      if (whatsappGroups[i + 1]) {
+        row.push(
+          Markup.button.callback(
+            whatsappGroups[i + 1].title,
+            `wa_group_${whatsappGroups[i + 1].id}`
           )
         );
       }
@@ -587,6 +660,41 @@ bot.command("listagrupos", async (ctx) => {
 });
 
 // ===============================
+// /registrarwhats  (cadastrar nome de grupo de WhatsApp)
+// ===============================
+bot.command("registrarwhats", async (ctx) => {
+  const text = ctx.message.text || "";
+  const name = text.replace("/registrarwhats", "").trim();
+
+  if (!name) {
+    return ctx.reply(
+      "Use assim:\n/registrarwhats Nome do Grupo\n\nExemplo:\n/registrarwhats Promonene 👶 5A\n\nO nome tem que ser IGUAL ao nome do grupo no Whats."
+    );
+  }
+
+  const id = Date.now(); // ID simples só pra diferenciar
+
+  whatsappGroups.push({ id, title: name });
+  saveWhatsGroups(whatsappGroups);
+
+  await ctx.reply(`Grupo de WhatsApp registrado: *${name}* ✅`, {
+    parse_mode: "Markdown",
+  });
+});
+
+// opcional: listar grupos de WhatsApp cadastrados
+bot.command("listawhats", async (ctx) => {
+  if (whatsappGroups.length === 0) {
+    return ctx.reply("Nenhum grupo de WhatsApp registrado ainda.");
+  }
+  let msg = "Grupos de WhatsApp registrados:\n\n";
+  whatsappGroups.forEach((g) => {
+    msg += `- ${g.title} (ID interno: \`${g.id}\`)\n`;
+  });
+  ctx.reply(msg, { parse_mode: "Markdown" });
+});
+
+// ===============================
 // CALLBACKS DOS BOTÕES
 // ===============================
 bot.on("callback_query", async (ctx) => {
@@ -594,7 +702,7 @@ bot.on("callback_query", async (ctx) => {
   const dataCb = ctx.callbackQuery.data;
   const session = sessions.get(chatId);
 
-  // ==== callbacks específicos dos grupos ====
+  // ==== callbacks específicos dos grupos (Telegram) ====
   if (dataCb === "tg_no_groups") {
     await ctx.answerCbQuery(
       "Nenhum grupo registrado. Adicione o bot em um grupo e mande /registrargrupo.",
@@ -605,10 +713,9 @@ bot.on("callback_query", async (ctx) => {
 
   if (dataCb === "tg_all_groups") {
     if (!session) {
-      await ctx.answerCbQuery(
-        "Gera uma promoção primeiro com /promo 😉",
-        { show_alert: true }
-      );
+      await ctx.answerCbQuery("Gera uma promoção primeiro com /promo 😉", {
+        show_alert: true,
+      });
       return;
     }
 
@@ -644,10 +751,9 @@ bot.on("callback_query", async (ctx) => {
 
   if (dataCb.startsWith("tg_group_")) {
     if (!session) {
-      await ctx.answerCbQuery(
-        "Gera uma promoção primeiro com /promo 😉",
-        { show_alert: true }
-      );
+      await ctx.answerCbQuery("Gera uma promoção primeiro com /promo 😉", {
+        show_alert: true,
+      });
       return;
     }
 
@@ -677,10 +783,9 @@ bot.on("callback_query", async (ctx) => {
         });
       }
 
-      await ctx.answerCbQuery(
-        `Promoção enviada para ${group.title} ✅`,
-        { show_alert: true }
-      );
+      await ctx.answerCbQuery(`Promoção enviada para ${group.title} ✅`, {
+        show_alert: true,
+      });
       await ctx.reply(`Promoção enviada para *${group.title}* ✅`, {
         parse_mode: "Markdown",
       });
@@ -692,6 +797,111 @@ bot.on("callback_query", async (ctx) => {
       await ctx.answerCbQuery(
         "Não consegui enviar para esse grupo (verifique permissões do bot).",
         { show_alert: true }
+      );
+    }
+
+    return;
+  }
+
+  // ==== callbacks específicos dos grupos de WhatsApp ====
+  if (dataCb === "wa_no_groups") {
+    await ctx.answerCbQuery(
+      "Nenhum grupo de WhatsApp cadastrado. Use /registrarwhats Nome do Grupo.",
+      { show_alert: true }
+    );
+    return;
+  }
+
+  if (dataCb === "wa_all_groups") {
+    if (!session) {
+      await ctx.answerCbQuery("Gera uma promoção primeiro com /promo 😉", {
+        show_alert: true,
+      });
+      return;
+    }
+
+    const caption = buildPromoMessage(session.data);
+    const imageUrl = session.data.imageUrl || null;
+
+    for (const g of whatsappGroups) {
+      try {
+        await axios.post(
+          `${WHATS_SERVER_URL}/whats/send`,
+          {
+            groupTitle: g.title,
+            message: caption,
+            imageUrl,
+          },
+          { timeout: 30000 }
+        );
+      } catch (e) {
+        console.error(
+          `Erro ao enviar para grupo Whats ${g.title}:`,
+          e.message
+        );
+      }
+    }
+
+    await ctx.answerCbQuery(
+      "Disparo solicitado para todos os grupos de WhatsApp ✅",
+      { show_alert: true }
+    );
+    await ctx.reply(
+      "📲 Disparo automático solicitado para todos os grupos de WhatsApp cadastrados."
+    );
+    return;
+  }
+
+  if (dataCb.startsWith("wa_group_")) {
+    if (!session) {
+      await ctx.answerCbQuery("Gera uma promoção primeiro com /promo 😉", {
+        show_alert: true,
+      });
+      return;
+    }
+
+    const idStr = dataCb.replace("wa_group_", "");
+    const groupId = Number(idStr);
+    const group = whatsappGroups.find((g) => g.id === groupId);
+
+    if (!group) {
+      await ctx.answerCbQuery("Grupo de Whats não encontrado na lista.", {
+        show_alert: true,
+      });
+      return;
+    }
+
+    const caption = buildPromoMessage(session.data);
+    const imageUrl = session.data.imageUrl || null;
+
+    try {
+      await axios.post(
+        `${WHATS_SERVER_URL}/whats/send`,
+        {
+          groupTitle: group.title,
+          message: caption,
+          imageUrl,
+        },
+        { timeout: 30000 }
+      );
+
+      await ctx.answerCbQuery(
+        `Disparo automático solicitado para ${group.title} ✅`,
+        { show_alert: true }
+      );
+      await ctx.reply(
+        `📲 Oferta enviada (ou em envio) para o grupo *${group.title}* no WhatsApp.`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Erro ao chamar servidor Whats:", e.message);
+      await ctx.answerCbQuery(
+        "Erro ao falar com o servidor do Whats. Veja os logs.",
+        { show_alert: true }
+      );
+      await ctx.reply(
+        "❌ Não consegui enviar para o WhatsApp. Verifique se o *whats-server.js* está rodando e conectado.",
+        { parse_mode: "Markdown" }
       );
     }
 
@@ -725,10 +935,9 @@ bot.on("callback_query", async (ctx) => {
     case "opt_preco":
       s.pendingField = "price";
       await ctx.answerCbQuery();
-      await ctx.reply(
-        "Digite o novo *preço* (apenas número, ex: 134.9):",
-        { parse_mode: "Markdown" }
-      );
+      await ctx.reply("Digite o novo *preço* (apenas número, ex: 134.9):", {
+        parse_mode: "Markdown",
+      });
       break;
 
     case "opt_apartir":
@@ -839,12 +1048,16 @@ bot.on("callback_query", async (ctx) => {
       });
       break;
 
-    case "opt_whats":
-      await ctx.answerCbQuery(
-        "Em breve: disparo automático no WhatsApp (modo teste) 😄",
-        { show_alert: true }
+    case "opt_whats": {
+      const kb = getWhatsGroupsKeyboard();
+      await ctx.editMessageReplyMarkup(kb.reply_markup);
+      await ctx.answerCbQuery();
+      await ctx.reply(
+        "Selecione o(s) grupo(s) de *WhatsApp* para disparar automaticamente:",
+        { parse_mode: "Markdown" }
       );
       break;
+    }
 
     case "opt_telegram": {
       const kb = getTelegramGroupsKeyboard();
@@ -961,7 +1174,8 @@ bot.start((ctx) => {
     "Bem-vindo ao PromoRadar.ia 🚀\n\n" +
       "Use assim:\n" +
       "/promo <link_compartilhado_do_produto> <link_afiliado_sec> [cupom=...] [pix=...]\n\n" +
-      "Para registrar grupos de disparo: adicione o bot no grupo e mande /registrargrupo."
+      "Para registrar grupos de disparo (Telegram): adicione o bot no grupo e mande /registrargrupo.\n" +
+      "Para registrar grupos de WhatsApp: mande /registrarwhats Nome do Grupo aqui no chat do bot (igual está no Whats)."
   );
 });
 
