@@ -1,0 +1,15 @@
+{
+  "name": "promoradar-ia-bot",
+  "version": "1.0.0",
+  "main": "src/bot.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "node src/bot.js"
+  },
+  "dependencies": {
+    "axios": "^1.13.2",
+    "dotenv": "^17.2.3",
+    "puppeteer": "^24.30.0",
+    "telegraf": "^4.16.3"
+  }
+}
