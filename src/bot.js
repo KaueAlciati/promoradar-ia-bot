@@ -94,6 +94,10 @@ let whatsappGroups = loadWhatsGroups();
 // ===============================
 const sessions = new Map();
 
+// Modo Spy: estado por chat
+// { step: 'waiting_image' | 'waiting_product_link', imageFileId?: string }
+const spyState = new Map();
+
 // ===============================
 // UTILS
 // ===============================
@@ -149,6 +153,8 @@ function getOptionsKeyboard() {
     [Markup.button.callback("📱 Disparar no WhatsApp", "opt_whats")],
 
     [Markup.button.callback("🤖 Disparar no Telegram", "opt_telegram")],
+
+    [Markup.button.callback("🕵️ Modo Spy", "opt_spy")],
 
     [
       Markup.button.callback(
@@ -484,7 +490,7 @@ function buildPromoMessage(data) {
 
   if (topMsg) msg += `${topMsg}\n\n`;
 
-  msg += `*${title}*\n\n`;
+  msg += `*${title || "Produto sem título"}*\n\n`;
 
   if (originalPrice) msg += `De ${formatBRL(originalPrice)}\n`;
 
@@ -513,8 +519,11 @@ function buildPromoMessage(data) {
 
   if (finalMsg) msg += `\n${finalMsg}\n`;
 
-  msg += `\n🔗 Link do Produto:\n${affiliateUrl}\n\n`;
-  msg += `Vendido por: *${sellerName}*`;
+  if (affiliateUrl) {
+    msg += `\n🔗 Link do Produto:\n${affiliateUrl}\n\n`;
+  }
+
+  msg += `Vendido por: *${sellerName || "Loja"}*`;
 
   return msg;
 }
@@ -566,6 +575,56 @@ async function updateCardImage(chatId, newUrl) {
   );
 }
 
+// helper para enviar card a partir de dados
+async function sendPromoCardFromData(ctx, promoData) {
+  const baseData = {
+    title: "Produto sem título",
+    price: null,
+    originalPrice: null,
+    installmentsQty: null,
+    installmentsAmount: null,
+    sellerName: "Vendedor",
+    affiliateUrl: "",
+    cupom: null,
+    pix: null,
+    fromPrice: false,
+    priceDetails: null,
+    unitPriceText: null,
+    comparePriceText: null,
+    parcelasText: null,
+    topMsg: null,
+    finalMsg: null,
+    obsIa: null,
+    obs: null,
+    imageUrl: null,
+  };
+
+  const data = { ...baseData, ...promoData };
+
+  const caption = buildPromoMessage(data);
+  const keyboard = getOptionsKeyboard();
+
+  let sent;
+  if (data.imageUrl) {
+    sent = await ctx.replyWithPhoto(data.imageUrl, {
+      caption,
+      parse_mode: "Markdown",
+      reply_markup: keyboard.reply_markup,
+    });
+  } else {
+    sent = await ctx.reply(caption, {
+      parse_mode: "Markdown",
+      reply_markup: keyboard.reply_markup,
+    });
+  }
+
+  sessions.set(ctx.chat.id, {
+    lastMessageId: sent.message_id,
+    data,
+    pendingField: null,
+  });
+}
+
 // ===============================
 // /promo
 // ===============================
@@ -593,43 +652,11 @@ bot.command("promo", async (ctx) => {
 
     const scraped = await scrapeProduct(sharedUrl);
 
-    const data = {
+    await sendPromoCardFromData(ctx, {
       ...scraped,
       affiliateUrl,
       cupom,
       pix,
-      fromPrice: false,
-      priceDetails: null,
-      unitPriceText: null,
-      comparePriceText: null,
-      parcelasText: null,
-      topMsg: null,
-      finalMsg: null,
-      obsIa: null,
-      obs: null,
-    };
-
-    const caption = buildPromoMessage(data);
-    const keyboard = getOptionsKeyboard();
-
-    let sent;
-    if (data.imageUrl) {
-      sent = await ctx.replyWithPhoto(data.imageUrl, {
-        caption,
-        parse_mode: "Markdown",
-        reply_markup: keyboard.reply_markup,
-      });
-    } else {
-      sent = await ctx.reply(caption, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard.reply_markup,
-      });
-    }
-
-    sessions.set(ctx.chat.id, {
-      lastMessageId: sent.message_id,
-      data,
-      pendingField: null,
     });
   } catch (err) {
     console.error("ERRO AO GERAR PROMOÇÃO:", err.message || err);
@@ -637,6 +664,23 @@ bot.command("promo", async (ctx) => {
       "Não consegui gerar a promoção 😥\nConfere o link e tenta de novo.\nUse assim:\n/promo <link_compartilhado_do_produto> <link_afiliado_sec> [cupom=...] [pix=...]"
     );
   }
+});
+
+// ===============================
+// /spy  (Modo Spy - clonar por IMAGEM)
+// ===============================
+bot.command("spy", async (ctx) => {
+  const chatId = ctx.chat.id;
+
+  spyState.set(chatId, { step: "waiting_image" });
+
+  await ctx.reply(
+    "🕵️ *Modo Spy ativado!*\n\n" +
+      "1️⃣ Me envie o *print/imagem* da oferta que você quer clonar.\n" +
+      "2️⃣ Se o print não tiver texto na legenda, depois me envie o *link normal* do produto.\n\n" +
+      "Depois eu vou pedir o *seu link de afiliado* pra completar o card. 😉",
+    { parse_mode: "Markdown" }
+  );
 });
 
 // ===============================
@@ -668,7 +712,7 @@ bot.command("registrarwhats", async (ctx) => {
 
   if (!name) {
     return ctx.reply(
-      "Use assim:\n/registrarwhats Nome do Grupo\n\nExemplo:\n/registrarwhats Promonene 👶 5A\n\nO nome tem que ser IGUAL ao nome do grupo no Whats."
+      "Use assim:\n/registrarwhats Nome do Grupo\n\nExemplo:\n/registrarwhats Promoções Malu 👶 5A\n\nO nome tem que ser IGUAL ao nome do grupo no Whats."
     );
   }
 
@@ -692,6 +736,101 @@ bot.command("listawhats", async (ctx) => {
     msg += `- ${g.title} (ID interno: \`${g.id}\`)\n`;
   });
   ctx.reply(msg, { parse_mode: "Markdown" });
+});
+
+// ===============================
+// FOTO no Modo Spy
+// ===============================
+bot.on("photo", async (ctx) => {
+  const chatId = ctx.chat.id;
+  const spy = spyState.get(chatId);
+
+  // Só tratamos foto se o chat estiver no Modo Spy
+  if (!spy || spy.step !== "waiting_image") return;
+
+  try {
+    const photos = ctx.message.photo;
+    const biggestPhoto = photos[photos.length - 1]; // maior resolução
+    const fileId = biggestPhoto.file_id;
+    const caption = ctx.message.caption || "";
+
+    // guarda imagem
+    spyState.set(chatId, { step: "waiting_product_or_aff", imageFileId: fileId });
+
+    // tenta achar URL na legenda
+    const urls = caption.match(/https?:\/\/\S+/g);
+
+    if (urls && urls.length > 0) {
+      const sharedUrl = urls[0];
+
+      await ctx.reply(
+        "🕵️ Clonando a oferta a partir da imagem *e do link na legenda*..."
+      );
+
+      const scraped = await scrapeProduct(sharedUrl);
+
+      const data = {
+        ...scraped,
+        affiliateUrl: "",
+        cupom: null,
+        pix: null,
+        fromPrice: false,
+        priceDetails: null,
+        unitPriceText: null,
+        comparePriceText: null,
+        parcelasText: null,
+        topMsg: null,
+        finalMsg: null,
+        obsIa: null,
+        obs: null,
+      };
+
+      const captionCard = buildPromoMessage(data);
+      const keyboard = getOptionsKeyboard();
+
+      const imageToUse = data.imageUrl || fileId;
+
+      let sent;
+      if (imageToUse) {
+        sent = await ctx.replyWithPhoto(imageToUse, {
+          caption: captionCard,
+          parse_mode: "Markdown",
+          reply_markup: keyboard.reply_markup,
+        });
+      } else {
+        sent = await ctx.reply(captionCard, {
+          parse_mode: "Markdown",
+          reply_markup: keyboard.reply_markup,
+        });
+      }
+
+      sessions.set(chatId, {
+        lastMessageId: sent.message_id,
+        data,
+        pendingField: "affiliateUrl",
+      });
+
+      spyState.delete(chatId);
+
+      await ctx.reply(
+        "🔗 Oferta clonada!\nAgora me envie o *seu link de afiliado* para essa oferta:",
+        { parse_mode: "Markdown" }
+      );
+    } else {
+      await ctx.reply(
+        "🖼 Print recebido!\nAgora me envie o *link normal do produto* (Mercado Livre, Amazon, etc.) que está nessa oferta:",
+        { parse_mode: "Markdown" }
+      );
+      spyState.set(chatId, { step: "waiting_product_link", imageFileId: fileId });
+    }
+  } catch (err) {
+    console.error("ERRO NO MODO SPY (foto):", err.message || err);
+    spyState.delete(chatId);
+    await ctx.reply(
+      "Não consegui clonar a partir dessa imagem 😥\n" +
+        "Tenta de novo ou usa o /promo com o link direto."
+    );
+  }
 });
 
 // ===============================
@@ -915,6 +1054,19 @@ bot.on("callback_query", async (ctx) => {
     return;
   }
 
+  if (dataCb === "opt_spy") {
+    spyState.set(chatId, { step: "waiting_image" });
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      "🕵️ *Modo Spy ativado!*\n\n" +
+        "1️⃣ Me envie o *print/imagem* da oferta que você quer clonar.\n" +
+        "2️⃣ Se o print não tiver texto na legenda, depois me envie o *link normal* do produto.\n\n" +
+        "Depois eu vou pedir o *seu link de afiliado* pra completar o card. 😉",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
   // ==== daqui pra baixo usa sessão normal (edição de card) ====
   if (!session) {
     await ctx.answerCbQuery("Gera uma promoção primeiro com /promo");
@@ -1084,11 +1236,89 @@ bot.on("callback_query", async (ctx) => {
 // ===============================
 bot.on("text", async (ctx) => {
   const chatId = ctx.chat.id;
-  const text = ctx.message.text;
+  const text = ctx.message.text.trim();
 
   // ignora comandos (já tratados em bot.command)
   if (text.startsWith("/")) return;
 
+  // Primeiro: checar se está no fluxo do Spy esperando link do produto
+  const spy = spyState.get(chatId);
+  if (spy && spy.step === "waiting_product_link") {
+    const urls = text.match(/https?:\/\/\S+/g);
+    if (!urls || urls.length === 0) {
+      await ctx.reply(
+        "Preciso de um *link válido* do produto (começando com http...).\nTenta mandar o link de novo 😉",
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    const sharedUrl = urls[0];
+
+    try {
+      await ctx.reply("🕵️ Clonando a oferta a partir do link...");
+
+      const scraped = await scrapeProduct(sharedUrl);
+
+      const data = {
+        ...scraped,
+        affiliateUrl: "",
+        cupom: null,
+        pix: null,
+        fromPrice: false,
+        priceDetails: null,
+        unitPriceText: null,
+        comparePriceText: null,
+        parcelasText: null,
+        topMsg: null,
+        finalMsg: null,
+        obsIa: null,
+        obs: null,
+      };
+
+      const captionCard = buildPromoMessage(data);
+      const keyboard = getOptionsKeyboard();
+
+      const imageToUse = data.imageUrl || spy.imageFileId || null;
+
+      let sent;
+      if (imageToUse) {
+        sent = await ctx.replyWithPhoto(imageToUse, {
+          caption: captionCard,
+          parse_mode: "Markdown",
+          reply_markup: keyboard.reply_markup,
+        });
+      } else {
+        sent = await ctx.reply(captionCard, {
+          parse_mode: "Markdown",
+          reply_markup: keyboard.reply_markup,
+        });
+      }
+
+      sessions.set(chatId, {
+        lastMessageId: sent.message_id,
+        data,
+        pendingField: "affiliateUrl",
+      });
+
+      spyState.delete(chatId);
+
+      await ctx.reply(
+        "🔗 Oferta clonada!\nAgora me envie o *seu link de afiliado* para essa oferta:",
+        { parse_mode: "Markdown" }
+      );
+    } catch (err) {
+      console.error("ERRO NO MODO SPY (link):", err.message || err);
+      spyState.delete(chatId);
+      await ctx.reply(
+        "Não consegui clonar essa oferta 😥\n" +
+          "Confere o link ou usa o /promo com o link direto."
+      );
+    }
+    return;
+  }
+
+  // ===== fluxo normal de edição do card =====
   const session = sessions.get(chatId);
   if (!session || !session.pendingField) {
     await ctx.reply(
@@ -1098,7 +1328,7 @@ bot.on("text", async (ctx) => {
   }
 
   const field = session.pendingField;
-  const value = text.trim();
+  const value = text;
 
   switch (field) {
     case "title":
@@ -1157,6 +1387,10 @@ bot.on("text", async (ctx) => {
       await ctx.reply("Imagem atualizada ✅");
       return;
 
+    case "affiliateUrl":
+      session.data.affiliateUrl = value;
+      break;
+
     default:
       break;
   }
@@ -1174,6 +1408,8 @@ bot.start((ctx) => {
     "Bem-vindo ao PromoRadar.ia 🚀\n\n" +
       "Use assim:\n" +
       "/promo <link_compartilhado_do_produto> <link_afiliado_sec> [cupom=...] [pix=...]\n\n" +
+      "Modo Spy (clonar por imagem):\n" +
+      "/spy e depois envie a imagem da oferta.\n\n" +
       "Para registrar grupos de disparo (Telegram): adicione o bot no grupo e mande /registrargrupo.\n" +
       "Para registrar grupos de WhatsApp: mande /registrarwhats Nome do Grupo aqui no chat do bot (igual está no Whats)."
   );
